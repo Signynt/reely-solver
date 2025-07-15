@@ -7,6 +7,9 @@ STOP_ON_FIRST_CONNECTION = False
 OUTPUT_FILE = "connections.csv"
 # ----------------
 
+# This will store the minimum number of movies found in a connection.
+min_connection_movies = float('inf')
+
 # Clear the output file and write the CSV header
 with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
     writer = csv.writer(f)
@@ -85,6 +88,7 @@ def reconstruct_path(movie_title, movies_actors_dict, start_name):
 
 def expand_and_check(movies_actors_to_expand, searched_actors, other_movies_actors, search_api, start_name_expand, start_name_other):
     """Expands a set of movies and checks for a connection after each addition."""
+    global min_connection_movies
     connection_found_this_pass = False
     
     # Create a flat set of all actors from the movies to be expanded
@@ -120,7 +124,8 @@ def expand_and_check(movies_actors_to_expand, searched_actors, other_movies_acto
             for movie_credit in person_credits['cast']:
                 new_movie_title = movie_credit['title']
                 
-                if new_movie_title not in movies_actors_to_expand:
+                # Prevent cycles by not adding a movie that's already been seen on either side
+                if new_movie_title not in movies_actors_to_expand and new_movie_title not in other_movies_actors:
                     print(f"Adding movie: '{new_movie_title}' (via {actor_name} from '{source_movie_title}')")
                     movie_obj = tmdb.Movies(movie_credit['id'])
                     credits = movie_obj.credits()
@@ -140,14 +145,32 @@ def expand_and_check(movies_actors_to_expand, searched_actors, other_movies_acto
                         common_actor_names = set(new_movie_cast.keys()).intersection(other_movie_data['actors'].keys())
                         
                         if common_actor_names:
+                            path1_str, path1_items = reconstruct_path(new_movie_title, movies_actors_to_expand, start_name_expand)
+                            path2_str, path2_items = reconstruct_path(other_movie_title, other_movies_actors, start_name_other)
+                            
+                            # Calculate the number of movies in this connection
+                            num_movies = sum(1 for item in path1_items if item[0] == 'Movie') + \
+                                         sum(1 for item in path2_items if item[0] == 'Movie')
+
+                            # If this connection is longer than the shortest one found, skip it.
+                            if num_movies > min_connection_movies:
+                                print(f"\nFound a longer connection ({num_movies} movies). Discarding.")
+                                continue
+
                             connection_found_this_pass = True
                             common_actor_name = common_actor_names.pop()
                             common_actor_popularity = new_movie_cast.get(common_actor_name, 0)
 
                             print("\n--- Connection Found! ---")
-                            path1_str, path1_items = reconstruct_path(new_movie_title, movies_actors_to_expand, start_name_expand)
-                            path2_str, path2_items = reconstruct_path(other_movie_title, other_movies_actors, start_name_other)
                             
+                            # If this is a new shortest path, update the minimum and clear the output file.
+                            if num_movies < min_connection_movies:
+                                print(f"New shortest connection found: {num_movies} movies. Clearing previous results.")
+                                min_connection_movies = num_movies
+                                with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
+                                    writer = csv.writer(f)
+                                    writer.writerow(["Connection", "Average Popularity"])
+
                             # Reverse the second path string for correct flow
                             reversed_path2_parts = path2_str.split(' -> ')
                             reversed_path2_str = " -> ".join(reversed(reversed_path2_parts))
@@ -157,9 +180,6 @@ def expand_and_check(movies_actors_to_expand, searched_actors, other_movies_acto
                             print(full_path_str)
 
                             # Combine path items and calculate average popularity
-                            # The common actor is in path1_items' source, but not path2_items
-                            # The common movie is the last item in path1_items
-                            # The other movie is the last item in path2_items
                             all_path_items = path1_items + [('Actor', common_actor_name, common_actor_popularity)] + list(reversed(path2_items))
                             
                             total_popularity = sum(item[2] for item in all_path_items)
